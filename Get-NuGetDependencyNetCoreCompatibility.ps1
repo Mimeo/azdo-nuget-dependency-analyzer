@@ -9,7 +9,10 @@ Param(
     [string]$PAT,
 
     [Parameter(Mandatory = $false)]
-    [int]$Count = 1000
+    [int]$Count = 1000,
+
+    [Parameter(Mandatory = $false)]
+    [string]$ExportToCsv
 )
 
 Function GetAzureDevopsRequestHeader {
@@ -133,10 +136,14 @@ try {
     # First find all of the packages.config files across all projects/repos in the organization
     $searchResults = FindPackageConfigFiles
 
-    Write-Verbose "Fetching packages.config data..."
+    Write-Verbose "Assembling list of NuGet packages"
 
     $packageData = @{}
+    $analysisProgress = 0
     $searchResults | % { 
+        if($ExportToCsv) {
+            Write-Progress -Activity "Assembling list of NuGet packages" -PercentComplete ([int]((++$analysisProgress / $searchResults.Count)*100)) -Status "Repo: $($_.project.name) / $($_.repository.name) ($analysisProgress of $($searchResults.Count))"
+        }
         write-verbose $_
         $packageSpec = FetchPackageConfig -Organization $OrganizationName -RepositoryId $_.repository.id -BlobId $_.contentId
         AnalyzePackage -Package $packageSpec -PackageData ([ref]$packageData) -Project $_.project.name -Repository $_.repository.name        
@@ -145,18 +152,40 @@ try {
     Write-Verbose "Analyzing package compatibility..."
 
     $packageCompatibiltyData = @{}
+    $csvData = @()
+    $csvData += "Package,Supports NetCore,Project,Repository"
+
+    $analysisProgress = 0
+
     $packageData.Keys | % {
-        $netcore = CheckNetCoreCompatibility -Package $_
-        $p = [PSCustomObject]@{
-            netcore = $netcore
-            projects = $packageData[$_]
+        if($ExportToCsv) {
+            Write-Progress -Activity "Analyzing package compatibility" -PercentComplete ([int]((++$analysisProgress / $packageData.Keys.Count)*100)) -Status "Package: $_ ($analysisProgress of $($packageData.Keys.Count))"
         }
 
-        $packageCompatibiltyData.Add($_, $p)
+        $netcore = CheckNetCoreCompatibility -Package $_
+        $projects = $packageData[$_]
+        if ($ExportToCsv) {
+            foreach ($p in $projects) {
+                $csvData += "$_,$netcore,$($p.project),$($p.repository)"
+            }
+        } else {
+            $p = [PSCustomObject]@{
+                netcore = $netcore
+                projects = $packageData[$_]
+            }
+
+            $packageCompatibiltyData.Add($_, $p)
+        }
     }
 
-    return $packageCompatibiltyData
-} 
+    if($ExportToCsv) {
+        Write-Host "Saving results to $ExportToCsv ..." -NoNewLine
+        $csvData | Out-File -Encoding ascii -FilePath $ExportToCsv -Append
+        Write-Host "done."
+    } else {
+        return $packageCompatibiltyData
+    }
+}  
 finally {
     Set-Location $currentDir
 }
